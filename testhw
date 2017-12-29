@@ -1,0 +1,198 @@
+#! /bin/bash
+
+executableName=CPU.out
+maxSleep=60     # 1 minutes
+tooLong=0
+errorCount=0
+MakefileScore=0
+CPUTime=0
+CPUScore=0
+leakScore=0
+
+echo $1
+testerDirectory="/home/ssdavis/60/p4/Testing"
+
+if [ $# -ne 1 ]; then
+  echo "usage testhw: testhw source_directory" 1>&2
+  exit
+fi
+
+if [[ $1 =~ Testing ]]; then # Use from this directory is not allowed
+  echo "You may not use Testing as your own source directory!"  1>&2
+  exit
+fi
+
+cd $1
+
+echo -n "Scores from p4 for " >> results.txt
+
+if [ -e authors.csv ]; then
+  dos2unix -q authors.csv
+  awk -F, '{printf"%s,%s ", $2, $3}' authors.csv >> results.txt
+  awk -F, '{printf"%s,%s\n", $2, $3}' authors.csv > names.txt
+  echo -e "\n\nNote that the format for authors.csv is: e-mail<comma>last name<comma>first name" >> results.txt
+  echo "For example: ssdavis@ucdavis.edu,Davis,Sean"  >> results.txt
+  awk -F, {'printf"%s ", $1'} authors.csv > addresses
+else
+  echo  "You need to create an authors.csv file!!!! No one will receive credit for this assignment"  >> results.txt
+  echo "$1@ucdavis.edu" > addresses
+  finger ${PWD##*/} | awk 'NR == 1 {printf"%s,%s", $5, $4}' > names.txt
+fi
+
+echo -en "\nAddresses used: " >> results.txt
+cat addresses >> results.txt
+echo " " >> results.txt
+echo "Directory: $1"
+
+echo "This is a run of p4 with a one minute limit on the time allowed per run."  >> results.txt
+#echo "I  will look at the results tomorrow, and see if any that didn't complete before do now." >> results.txt
+
+echo -n "Scores from p4 for " >> results.txt
+cat names.txt >> results.txt
+
+
+rm -f *.out *.o  core* CPURunner.* CPUTimer* mynew.* results* cpu-4000000-[678].* &> /dev/null
+
+if grep "#include *<" *.cpp *.h | egrep -v "(iostream|cstddef|cstdlib|cstring|climits)" >& /dev/null ; then
+  echo "Found #include of standard library other than iostream, cstdlib, cstring, climits, and cstddef." >> results.txt
+  echo "so zero for the assignment." >> results.txt
+  (( errorCount++ ))
+fi
+
+cp $testerDirectory/*.h $testerDirectory/*.cpp .
+ln -s $testerDirectory/*.dat . 
+
+if [ -e *akefile ]; then
+  echo "Makefile optimization check: " >> results.txt
+  cat *akefile* | grep O > temp
+  if [ -s temp ]; then
+    (( errorCount++ ))
+    cat  temp >> results.txt
+    echo "Optimization flag found in Makefile so zero for assignment." >> results.txt
+  else
+    echo "OK" >> results.txt
+  fi
+else
+ echo "No Makefile found so using default, -1 from total." >> results.txt
+ #echo "If your code doesn't work with that Makefile, then handin only a Makefile, and e-mail Sean." >> results.txt
+ cp  $testerDirectory/Makefile .
+ MakefileScore=-1
+fi
+ 
+make &> /dev/null
+
+if [ -s $executableName ]; then
+  rm totalTemp &> /dev/null 
+  fileNum=6
+
+  while [[ $fileNum -lt 9 ]] ; do 
+    echo "Testing  cpu-4000000-$fileNum.dat: " >> results.txt
+    echo $executableName $testerDirectory/cpu-4000000-$fileNum.dat
+    ($executableName $testerDirectory/cpu-4000000-$fileNum.dat | tail | tee -a totalTemp  > temp)&
+    count=0 
+
+    while [[ $count -lt $maxSleep ]]; do
+      sleep 1
+      (( count += 1 ))
+      ps | grep $executableName > temp2
+      echo $count
+
+      if [ ! -s temp2 ]; then
+        cat temp 
+        break
+      fi
+    done
+
+    pkill $executableName &> /dev/null
+    rm core &> /dev/null
+
+    if [ ! -s temp ]; then
+      echo "$executableName did not finish in 1 minute or seg faulted so you will receive a zero." >> results.txt
+      (( tooLong++ ))
+    else 
+      cat temp >> results.txt
+      echo " " >> results.txt
+      lineCount=$( cat temp | wc -l )
+
+      if [ $lineCount -gt 1 ]; then
+        echo "Errors found, so zero for assignment." >> results.txt 
+        (( errorCount++ ))
+      fi # if more than one line in temp
+    fi #if temp not created so didn't finish
+
+    (( fileNum++ ))
+  done
+
+  rm temp
+  echo "Starting   valgrind $executableName  $testerDirectory/cpu-4000000-8.dat."
+  valgrind $executableName  $testerDirectory/cpu-4000000-8.dat   &> temp 
+  echo "Done with valgrind"
+
+  if  grep "invalid" temp >& /dev/null ; then
+    echo "You program seg faulted, so 5 points will be deducted."  >> results.txt
+    leakScore=-5
+  elif grep "lost.*[1-9]" temp >& /dev/null ; then
+      echo "Memory leak found so 5 points will be deducted." >> results.txt
+      leakScore=-5
+    elif ! grep "ERROR SUMMARY: 0 errors from 0 contexts" temp >& /dev/null ; then
+       echo "Memory error found so 5 points will be deducted." >> results.txt
+       leakScore=-5
+    else
+      echo "No memory problems."  >> results.txt
+  fi
+
+  cat totalTemp | awk '/CPU/ {CPU += $3; COUNT += $5; Compulsory += $7; RAM += $9} \
+  END {print CPU, int(15 * 2.67/CPU + 0.9), COUNT - Compulsory, int(15 * 9255687/(COUNT - Compulsory) + 0.9), int(RAM / 3)}' > scores.txt
+  rm -f core >& /dev/null
+  CPUTime=$( awk '{print $1}' scores.txt )
+  CPUScore=$( awk '{print $2}' scores.txt )
+  Transfer=$( awk '{print $3}' scores.txt )
+  TransferScore=$( awk '{print $4}' scores.txt )
+  RAM=$( awk '{print $5}' scores.txt )
+
+  
+  if [ $CPUScore -gt 17 ] ; then
+    CPUScore=17
+  fi
+
+  if [ $TransferScore -gt 18 ] ; then
+    TransferScore=18
+  fi
+
+  echo -e "\nTotal CPU Time: Yours $CPUTime  Sean's: 2.67 so your score is $CPUScore"  >> results.txt
+  echo -e "\nTotal Transfer: Yours $Transfer  Sean's: 9255687 so your score is $TransferScore"  >> results.txt
+
+  if [ $RAM -gt 64000 ]; then
+    echo 'Your program took more than 64000 bytes, so it will receive a zero.'  >> results.txt
+    finalScore=0
+  elif [ $tooLong -gt 0 ]; then
+      echo 'Total Score: Zero because it did not complete in time.'  >> results.txt
+      finalScore=0
+    elif [[ $errorCount -gt 0 ]]; then
+        echo 'Total Score: Zero because there were errors found while running.' >> results.txt
+        finalScore=0
+      else
+        finalScore=$(( $CPUScore + $TransferScore + 20 + $MakefileScore + $leakScore ))
+       
+        if [ $finalScore -lt 0 ]; then
+          finalScore=0
+        fi
+        echo "Total score: $CPUScore + $TransferScore + 20 + $MakefileScore + $leakScore = $finalScore" >> results.txt
+  fi # if too much RAM 
+else
+  echo "$executableName was not created by make, so zero for assignment." >> results.txt
+fi
+
+
+#mailx -s "ECS 60 P4 Test Results" `cat addresses` < results.txt
+
+
+#awk 'NR == 1 {printf"%s,", $0}' names.txt >> ../results.csv
+#echo "${1%%/},$finalScore,$errorCount,$tooLong,$CPUScore,$TransferScore,$leakScore" >> ../results.csv
+#authorCount=$(grep "@" authors.csv | wc -l)
+
+#if [ $authorCount -gt 1 ]; then
+#  awk 'NR == 2 {printf"%s,", $0}' names.txt >> ../results.csv
+#  echo "${1%%/},$finalScore,$errorCount,$tooLong,$CPUScore,$TransferScore,$leakScore" >> ../results.csv
+#  fi
+
